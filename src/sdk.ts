@@ -16,6 +16,7 @@ import { instrumentEnv } from './instrumentation/env.js'
 import { versionAttributes } from './instrumentation/version.js'
 import { PromiseTracker, proxyExecutionContext } from './instrumentation/common.js'
 import { emailInstrumentation } from './instrumentation/email.js'
+import { EntrypointClass, instrumentEntrypointClass } from './instrumentation/entrypoint.js'
 
 //@ts-ignore
 import * as versions from '../versions.json'
@@ -227,6 +228,12 @@ export function instrumentDO(doClass: DOClass, config: ConfigurationOption) {
 	const initialiser = createInitialiser(config)
 
 	return instrumentDOClass(doClass, initialiser)
+}
+
+export function instrumentEntrypoint(entrypointClass: EntrypointClass, config: ConfigurationOption) {
+	const initialiser = createInitialiser(config)
+
+	return instrumentEntrypointClass(entrypointClass, initialiser)
 }
 
 export const __unwrappedFetch = unwrap(fetch)

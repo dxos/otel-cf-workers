@@ -100,4 +100,6 @@ export type Trigger =
 	| ScheduledController
 	| DOConstructorTrigger
 	| 'do-alarm'
+	| 'entrypoint-constructor'
+	| 'entrypoint-method'
 	| ForwardableEmailMessage
