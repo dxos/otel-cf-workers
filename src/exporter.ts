@@ -15,7 +15,7 @@ export interface OTLPExporterConfig {
 const defaultHeaders: Record<string, string> = {
 	accept: 'application/json',
 	'content-type': 'application/json',
-	'user-agent': `Cloudflare Worker @microlabs/otel-cf-workers v${versions['@microlabs/otel-cf-workers']}`,
+	'user-agent': `Cloudflare Worker @dxos/otel-cf-workers v${versions['@dxos/otel-cf-workers']}`,
 }
 
 export class OTLPExporter implements SpanExporter {
