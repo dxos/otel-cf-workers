@@ -52,41 +52,6 @@ export function executeEntrypointFetch(fetchFn: FetchFn, request: Request): Prom
 	return promise
 }
 
-export function executeEntrypointRpcMethod(
-	methodFn: (...args: any[]) => any,
-	methodName: string,
-	args: any[],
-): Promise<any> {
-	const tracer = trace.getTracer('Entrypoint RPC methodHandler')
-
-	const attributes = {
-		[SemanticAttributes.FAAS_TRIGGER]: 'other',
-		'method.name': methodName,
-		'method.args_count': args.length,
-		'rpc.method': methodName,
-	}
-
-	const options: SpanOptions = {
-		attributes,
-		kind: SpanKind.SERVER, // RPC methods are server-side
-	}
-
-	const promise = tracer.startActiveSpan(`RPC Method ${methodName}`, options, async (span) => {
-		try {
-			const result = await methodFn(...args)
-			span.setStatus({ code: SpanStatusCode.OK })
-			span.end()
-			return result
-		} catch (error) {
-			span.recordException(error as Exception)
-			span.setStatus({ code: SpanStatusCode.ERROR })
-			span.end()
-			throw error
-		}
-	})
-	return promise
-}
-
 function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env): FetchFn {
 	const fetchHandler: ProxyHandler<FetchFn> = {
 		async apply(target, thisArg, argArray: Parameters<FetchFn>) {
@@ -106,34 +71,15 @@ function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env)
 }
 
 function instrumentAnyFn(fn: (...args: any[]) => any, initialiser: Initialiser, env: Env) {
-	if (!fn) {
-		return undefined
-	}
-
-	const methodName = fn.name || 'anonymous'
-	const isPrivateMethod = methodName.startsWith('#') || methodName.startsWith('_')
-
 	const fnHandler: ProxyHandler<(...args: any[]) => any> = {
 		async apply(target, thisArg, argArray) {
 			thisArg = unwrap(thisArg)
-
 			const config = initialiser(env, 'entrypoint-method')
 			const context = setConfig(config)
 
-			// Only create spans for public RPC methods, not private methods
-			if (isPrivateMethod) {
-				try {
-					const bound = target.bind(thisArg)
-					return await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
-				} catch (error) {
-					throw error
-				}
-			}
-
-			// Create a span for public RPC methods
 			try {
 				const bound = target.bind(thisArg)
-				return await api_context.with(context, executeEntrypointRpcMethod, undefined, bound, methodName, argArray)
+				return await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
 			} catch (error) {
 				throw error
 			}
