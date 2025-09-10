@@ -231,9 +231,16 @@ export function instrumentDO(doClass: DOClass, config: ConfigurationOption) {
 }
 
 export function instrumentEntrypoint(entrypointClass: EntrypointClass, config: ConfigurationOption) {
-	const initialiser = createInitialiser(config)
+	console.log('[OTEL] SDK instrumentEntrypoint called with class:', entrypointClass.name)
+	console.log('[OTEL] Config:', config)
 
-	return instrumentEntrypointClass(entrypointClass, initialiser)
+	const initialiser = createInitialiser(config)
+	console.log('[OTEL] Initialiser created:', initialiser)
+
+	const result = instrumentEntrypointClass(entrypointClass, initialiser)
+	console.log('[OTEL] Entrypoint class instrumented')
+
+	return result
 }
 
 export const __unwrappedFetch = unwrap(fetch)
