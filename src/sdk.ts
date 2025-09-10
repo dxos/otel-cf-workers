@@ -16,6 +16,7 @@ import { instrumentEnv } from './instrumentation/env.js'
 import { versionAttributes } from './instrumentation/version.js'
 import { PromiseTracker, proxyExecutionContext } from './instrumentation/common.js'
 import { emailInstrumentation } from './instrumentation/email.js'
+import { EntrypointClass, instrumentEntrypointClass } from './instrumentation/entrypoint.js'
 
 //@ts-ignore
 import * as versions from '../versions.json'
@@ -64,8 +65,8 @@ const createResource = (config: ResolvedTraceConfig, versionMeta?: WorkerVersion
 		'cloud.region': 'earth',
 		'faas.max_memory': 134217728,
 		'telemetry.sdk.language': 'js',
-		'telemetry.sdk.name': '@microlabs/otel-cf-workers',
-		'telemetry.sdk.version': versions['@microlabs/otel-cf-workers'],
+		'telemetry.sdk.name': '@dxos/otel-cf-workers',
+		'telemetry.sdk.version': versions['@dxos/otel-cf-workers'],
 		'telemetry.sdk.build.node_version': versions['node'],
 		'cf.worker.version.id': versionMeta?.id,
 		'cf.worker.version.tag': versionMeta?.tag,
@@ -227,6 +228,11 @@ export function instrumentDO(doClass: DOClass, config: ConfigurationOption) {
 	const initialiser = createInitialiser(config)
 
 	return instrumentDOClass(doClass, initialiser)
+}
+
+export function instrumentEntrypoint(entrypointClass: EntrypointClass, config: ConfigurationOption) {
+	const initialiser = createInitialiser(config)
+	return instrumentEntrypointClass(entrypointClass, initialiser)
 }
 
 export const __unwrappedFetch = unwrap(fetch)
