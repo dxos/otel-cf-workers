@@ -15,7 +15,6 @@ type Env = Record<string, unknown>
 type FetchFn = NonNullable<WorkerEntrypoint['fetch']>
 
 let cold_start = true
-
 export function executeEntrypointFetch(fetchFn: FetchFn, request: Request): Promise<Response> {
 	console.log('[OTEL] executeEntrypointFetch called for:', request.url)
 
@@ -63,6 +62,47 @@ export function executeEntrypointFetch(fetchFn: FetchFn, request: Request): Prom
 	return promise
 }
 
+export function executeEntrypointRpcMethod(
+	methodFn: (...args: any[]) => any,
+	methodName: string,
+	args: any[],
+): Promise<any> {
+	const tracer = trace.getTracer('Entrypoint RPC methodHandler')
+	console.log('[OTEL] Tracer obtained for RPC method:', tracer)
+
+	const attributes = {
+		[SemanticAttributes.FAAS_TRIGGER]: 'other',
+		'method.name': methodName,
+		'method.args_count': args.length,
+		'rpc.method': methodName,
+	}
+	console.log('[OTEL] RPC method span attributes:', attributes)
+
+	const options: SpanOptions = {
+		attributes,
+		kind: SpanKind.SERVER, // RPC methods are server-side
+	}
+
+	const promise = tracer.startActiveSpan(`RPC Method ${methodName}`, options, async (span) => {
+		console.log('[OTEL] RPC method span started:', span.spanContext().spanId)
+		try {
+			const result = await methodFn(...args)
+			console.log('[OTEL] RPC method call completed successfully')
+			span.setStatus({ code: SpanStatusCode.OK })
+			span.end()
+			console.log('[OTEL] RPC method span ended successfully')
+			return result
+		} catch (error) {
+			console.log('[OTEL] Error in RPC method:', error)
+			span.recordException(error as Exception)
+			span.setStatus({ code: SpanStatusCode.ERROR })
+			span.end()
+			throw error
+		}
+	})
+	return promise
+}
+
 function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env): FetchFn {
 	console.log('[OTEL] instrumentFetchFn called')
 	const fetchHandler: ProxyHandler<FetchFn> = {
@@ -97,9 +137,13 @@ function instrumentAnyFn(fn: (...args: any[]) => any, initialiser: Initialiser, 
 		return undefined
 	}
 
+	const methodName = fn.name || 'anonymous'
+	const isPrivateMethod = methodName.startsWith('#') || methodName.startsWith('_')
+	console.log('[OTEL] Method is private:', isPrivateMethod, 'for method:', methodName)
+
 	const fnHandler: ProxyHandler<(...args: any[]) => any> = {
 		async apply(target, thisArg, argArray) {
-			console.log('[OTEL] instrumentAnyFn proxy handler called for function:', fn.name || 'anonymous')
+			console.log('[OTEL] instrumentAnyFn proxy handler called for function:', methodName)
 			console.log('[OTEL] Arguments received:', argArray)
 
 			thisArg = unwrap(thisArg)
@@ -111,14 +155,28 @@ function instrumentAnyFn(fn: (...args: any[]) => any, initialiser: Initialiser, 
 			const context = setConfig(config)
 			console.log('[OTEL] Method context set:', context)
 
+			// Only create spans for public RPC methods, not private methods
+			if (isPrivateMethod) {
+				console.log('[OTEL] Private method, not creating span, just propagating context')
+				try {
+					const bound = target.bind(thisArg)
+					console.log('[OTEL] Function bound, calling with context')
+					const result = await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
+					console.log('[OTEL] Private method call completed successfully')
+					return result
+				} catch (error) {
+					console.log('[OTEL] Error in private method:', error)
+					throw error
+				}
+			}
+
+			// Create a span for public RPC methods
 			try {
 				const bound = target.bind(thisArg)
-				console.log('[OTEL] Function bound, calling with context')
-				const result = await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
-				console.log('[OTEL] Method call completed successfully')
-				return result
+				console.log('[OTEL] Function bound, calling executeEntrypointRpcMethod')
+				return await api_context.with(context, executeEntrypointRpcMethod, undefined, bound, methodName, argArray)
 			} catch (error) {
-				console.log('[OTEL] Error in instrumentAnyFn:', error)
+				console.log('[OTEL] Error in RPC method:', error)
 				throw error
 			}
 		},
