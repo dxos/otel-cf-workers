@@ -77,9 +77,8 @@ const createResource = (config: ResolvedTraceConfig, versionMeta?: WorkerVersion
 		'service.namespace': config.service.namespace,
 		'service.version': config.service.version,
 	})
-	const extraResourceAttrs = resourceFromAttributes(config.resource || {})
 	const resource = resourceFromAttributes(workerResourceAttrs)
-	return resource.merge(serviceResource).merge(extraResourceAttrs)
+	return resource.merge(serviceResource)
 }
 
 let initialised = false

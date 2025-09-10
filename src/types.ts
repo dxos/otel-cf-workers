@@ -57,7 +57,6 @@ export interface InstrumentationOptions {
 
 interface TraceConfigBase {
 	service: ServiceConfig
-	resource?: Record<string, string>
 	handlers?: HandlerConfig
 	fetch?: FetcherConfig
 	postProcessor?: PostProcessorFn
