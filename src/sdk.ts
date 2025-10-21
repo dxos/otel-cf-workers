@@ -17,6 +17,7 @@ import { versionAttributes } from './instrumentation/version.js'
 import { PromiseTracker, proxyExecutionContext } from './instrumentation/common.js'
 import { emailInstrumentation } from './instrumentation/email.js'
 import { EntrypointClass, instrumentEntrypointClass } from './instrumentation/entrypoint.js'
+import { RpcTargetClass, instrumentRpcTargetClass } from './instrumentation/rpc-target.js'
 
 //@ts-ignore
 import * as versions from '../versions.json'
@@ -233,6 +234,11 @@ export function instrumentDO(doClass: DOClass, config: ConfigurationOption) {
 export function instrumentEntrypoint(entrypointClass: EntrypointClass, config: ConfigurationOption) {
 	const initialiser = createInitialiser(config)
 	return instrumentEntrypointClass(entrypointClass, initialiser)
+}
+
+export function instrumentRpcTarget(rpcTargetClass: RpcTargetClass, config: ConfigurationOption) {
+	const initialiser = createInitialiser(config)
+	return instrumentRpcTargetClass(rpcTargetClass, initialiser)
 }
 
 export const __unwrappedFetch = unwrap(fetch)
