@@ -1,4 +1,5 @@
 export * from './buffer.js'
+export * from './metricreader.js'
 export * from './sampling.js'
 export * from './sdk.js'
 export * from './span.js'

@@ -12,6 +12,7 @@ import { instrumentEnv } from './env.js'
 import { Initialiser, setConfig } from '../config.js'
 import { instrumentStorage } from './do-storage.js'
 import { DOConstructorTrigger } from '../types.js'
+import { flushMetrics } from '../sdk.js'
 
 import { DurableObject as DurableObjectClass } from 'cloudflare:workers'
 
@@ -106,12 +107,14 @@ export function executeDOFetch(fetchFn: FetchFn, request: Request, id: DurableOb
 			}
 			span.setAttributes(gatherResponseAttributes(response))
 			span.end()
+			flushMetrics().catch(() => {})
 
 			return response
 		} catch (error) {
 			span.recordException(error as Exception)
 			span.setStatus({ code: SpanStatusCode.ERROR })
 			span.end()
+			flushMetrics().catch(() => {})
 			throw error
 		}
 	})
@@ -131,10 +134,12 @@ export function executeDOAlarm(alarmFn: NonNullable<AlarmFn>, id: DurableObjectI
 		try {
 			await alarmFn()
 			span.end()
+			flushMetrics().catch(() => {})
 		} catch (error) {
 			span.recordException(error as Exception)
 			span.setStatus({ code: SpanStatusCode.ERROR })
 			span.end()
+			flushMetrics().catch(() => {})
 			throw error
 		}
 	})

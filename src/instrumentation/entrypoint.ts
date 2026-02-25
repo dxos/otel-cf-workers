@@ -9,6 +9,7 @@ import {
 } from './fetch.js'
 import { instrumentEnv } from './env.js'
 import { Initialiser, setConfig } from '../config.js'
+import { flushMetrics } from '../sdk.js'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 
 type Env = Record<string, unknown>
@@ -40,12 +41,14 @@ export function executeEntrypointFetch(fetchFn: FetchFn, request: Request): Prom
 			}
 			span.setAttributes(gatherResponseAttributes(response))
 			span.end()
+			flushMetrics().catch(() => {})
 
 			return response
 		} catch (error) {
 			span.recordException(error as Exception)
 			span.setStatus({ code: SpanStatusCode.ERROR })
 			span.end()
+			flushMetrics().catch(() => {})
 			throw error
 		}
 	})

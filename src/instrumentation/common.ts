@@ -1,5 +1,6 @@
 import { trace } from '@opentelemetry/api'
 import { WorkerTracer } from '../tracer.js'
+import { flushMetrics } from '../sdk.js'
 import { passthroughGet, wrap } from '../wrap.js'
 
 type ContextAndTracker = { ctx: ExecutionContext; tracker: PromiseTracker }
@@ -55,6 +56,7 @@ export async function exportSpans(tracker?: PromiseTracker) {
 	} else {
 		console.error('The global tracer is not of type WorkerTracer and can not export spans')
 	}
+	await flushMetrics()
 }
 
 /** Like `Promise.allSettled`, but handles modifications to the promises array */

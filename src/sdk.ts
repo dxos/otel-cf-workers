@@ -1,5 +1,7 @@
-import { context as api_context, Exception, propagation, SpanStatusCode, trace } from '@opentelemetry/api'
+import { context as api_context, Exception, metrics, propagation, SpanStatusCode, trace } from '@opentelemetry/api'
 import { Resource, resourceFromAttributes } from '@opentelemetry/resources'
+import { MeterProvider } from '@opentelemetry/sdk-metrics'
+import { OnDemandMetricReader } from './metricreader.js'
 
 import { Initialiser, parseConfig, setConfig } from './config.js'
 import { WorkerTracerProvider } from './provider.js'
@@ -83,6 +85,7 @@ const createResource = (config: ResolvedTraceConfig, versionMeta?: WorkerVersion
 }
 
 let initialised = false
+let meterProvider: MeterProvider | undefined
 function init(config: ResolvedTraceConfig): void {
 	if (!initialised) {
 		if (config.instrumentation.instrumentGlobalCache) {
@@ -96,6 +99,13 @@ function init(config: ResolvedTraceConfig): void {
 
 		const provider = new WorkerTracerProvider(config.spanProcessors, resource)
 		provider.register()
+
+		if (config.metrics) {
+			const metricReader = new OnDemandMetricReader(config.metrics.exporter)
+			meterProvider = new MeterProvider({ resource, readers: [metricReader] })
+			metrics.setGlobalMeterProvider(meterProvider)
+		}
+
 		initialised = true
 	}
 }
@@ -116,6 +126,12 @@ function createInitialiser(config: ConfigurationOption): Initialiser {
 	}
 }
 
+export async function flushMetrics(): Promise<void> {
+	if (meterProvider) {
+		await meterProvider.forceFlush()
+	}
+}
+
 export async function exportSpans(traceId: string, tracker?: PromiseTracker) {
 	const tracer = trace.getTracer('export')
 	if (tracer instanceof WorkerTracer) {
@@ -125,6 +141,7 @@ export async function exportSpans(traceId: string, tracker?: PromiseTracker) {
 	} else {
 		console.error('The global tracer is not of type WorkerTracer and can not export spans')
 	}
+	await flushMetrics()
 }
 
 type HandlerFnArgs<T extends Trigger, E extends Env> = (T | E | ExecutionContext)[]
