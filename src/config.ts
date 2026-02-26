@@ -60,6 +60,7 @@ export function parseConfig(supplied: TraceConfig): ResolvedTraceConfig {
 				tailSampler: supplied.sampling?.tailSampler || multiTailSampler([isHeadSampled, isRootErrorSpan]),
 			},
 			service: supplied.service,
+			deployment: supplied.deployment,
 			spanProcessors,
 			propagator: supplied.propagator || new W3CTraceContextPropagator(),
 			instrumentation: {

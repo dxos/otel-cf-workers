@@ -1,6 +1,6 @@
 {
 	"name": "@dxos/otel-cf-workers",
-	"version": "1.0.0-rc.61",
+	"version": "1.0.0-rc.62",
 	"module": "./dist/index.js",
 	"type": "module",
 	"types": "./dist/index.d.ts",
