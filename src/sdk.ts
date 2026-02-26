@@ -79,6 +79,7 @@ const createResource = (config: ResolvedTraceConfig, versionMeta?: WorkerVersion
 		'service.name': config.service.name,
 		'service.namespace': config.service.namespace,
 		'service.version': config.service.version,
+		'deployment.environment': config.deployment?.environment,
 	})
 	const resource = resourceFromAttributes(workerResourceAttrs)
 	return resource.merge(serviceResource)

@@ -40,6 +40,10 @@ export interface ServiceConfig {
 	version?: string
 }
 
+export interface DeploymentConfig {
+	environment?: string
+}
+
 export interface ParentRatioSamplingConfig {
 	acceptRemote?: boolean
 	ratio: number
@@ -62,6 +66,7 @@ export interface MetricsConfig {
 
 interface TraceConfigBase {
 	service: ServiceConfig
+	deployment?: DeploymentConfig
 	handlers?: HandlerConfig
 	fetch?: FetcherConfig
 	postProcessor?: PostProcessorFn
