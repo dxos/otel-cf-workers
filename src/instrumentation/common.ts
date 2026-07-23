@@ -3,8 +3,13 @@ import { WorkerTracer } from '../tracer.js'
 import { flushMetrics } from '../sdk.js'
 import { passthroughGet, wrap } from '../wrap.js'
 
-type ContextAndTracker = { ctx: ExecutionContext; tracker: PromiseTracker }
-type WaitUntilFn = ExecutionContext['waitUntil']
+/** Minimal context surface needed to keep async OTEL export alive across an invocation. */
+export type WaitUntilContext = {
+	waitUntil: (promise: Promise<unknown>) => void
+}
+
+type ContextAndTracker<T extends WaitUntilContext = ExecutionContext> = { ctx: T; tracker: PromiseTracker }
+type WaitUntilFn = WaitUntilContext['waitUntil']
 
 export class PromiseTracker {
 	_outstandingPromises: Promise<unknown>[] = []
@@ -22,7 +27,7 @@ export class PromiseTracker {
 	}
 }
 
-function createWaitUntil(fn: WaitUntilFn, context: ExecutionContext, tracker: PromiseTracker): WaitUntilFn {
+function createWaitUntil(fn: WaitUntilFn, context: WaitUntilContext, tracker: PromiseTracker): WaitUntilFn {
 	const handler: ProxyHandler<WaitUntilFn> = {
 		apply(target, _thisArg, argArray) {
 			tracker.track(argArray[0])
@@ -32,7 +37,7 @@ function createWaitUntil(fn: WaitUntilFn, context: ExecutionContext, tracker: Pr
 	return wrap(fn, handler)
 }
 
-export function proxyExecutionContext(context: ExecutionContext): ContextAndTracker {
+export function proxyExecutionContext<T extends WaitUntilContext>(context: T): ContextAndTracker<T> {
 	const tracker = new PromiseTracker()
 	const ctx = new Proxy(context, {
 		get(target, prop) {

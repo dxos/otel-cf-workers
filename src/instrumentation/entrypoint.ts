@@ -9,15 +9,16 @@ import {
 } from './fetch.js'
 import { instrumentEnv } from './env.js'
 import { Initialiser, setConfig } from '../config.js'
-import { flushMetrics } from '../sdk.js'
+import { exportSpans, proxyExecutionContext } from './common.js'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 
 type Env = Record<string, unknown>
 type FetchFn = NonNullable<WorkerEntrypoint['fetch']>
 
 let cold_start = true
-export function executeEntrypointFetch(fetchFn: FetchFn, request: Request): Promise<Response> {
+export function executeEntrypointFetch(fetchFn: FetchFn, request: Request, ctx: ExecutionContext): Promise<Response> {
 	const spanContext = getParentContextFromHeaders(request.headers)
+	const { tracker } = proxyExecutionContext(ctx)
 
 	const tracer = trace.getTracer('Entrypoint fetchHandler')
 	const attributes = {
@@ -41,21 +42,22 @@ export function executeEntrypointFetch(fetchFn: FetchFn, request: Request): Prom
 			}
 			span.setAttributes(gatherResponseAttributes(response))
 			span.end()
-			flushMetrics().catch(() => {})
+			// Keep the entrypoint fetch context alive across the async span/metric export.
+			ctx.waitUntil(exportSpans(tracker))
 
 			return response
 		} catch (error) {
 			span.recordException(error as Exception)
 			span.setStatus({ code: SpanStatusCode.ERROR })
 			span.end()
-			flushMetrics().catch(() => {})
+			ctx.waitUntil(exportSpans(tracker))
 			throw error
 		}
 	})
 	return promise
 }
 
-function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env): FetchFn {
+function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env, ctx: ExecutionContext): FetchFn {
 	const fetchHandler: ProxyHandler<FetchFn> = {
 		async apply(target, thisArg, argArray: Parameters<FetchFn>) {
 			const request = argArray[0]
@@ -64,7 +66,7 @@ function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env)
 
 			try {
 				const bound = target.bind(unwrap(thisArg))
-				return await api_context.with(context, executeEntrypointFetch, undefined, bound, request)
+				return await api_context.with(context, executeEntrypointFetch, undefined, bound, request, ctx)
 			} catch (error) {
 				throw error
 			}
@@ -73,18 +75,24 @@ function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env)
 	return wrap(fetchFn, fetchHandler)
 }
 
-function instrumentAnyFn(fn: (...args: any[]) => any, initialiser: Initialiser, env: Env) {
+function instrumentAnyFn(fn: (...args: any[]) => any, initialiser: Initialiser, env: Env, ctx: ExecutionContext) {
 	const fnHandler: ProxyHandler<(...args: any[]) => any> = {
 		async apply(target, thisArg, argArray) {
 			thisArg = unwrap(thisArg)
 			const config = initialiser(env, 'entrypoint-method')
 			const context = setConfig(config)
+			const { tracker } = proxyExecutionContext(ctx)
 
 			try {
 				const bound = target.bind(thisArg)
 				return await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
-			} catch (error) {
-				throw error
+			} finally {
+				// WorkerEntrypoint RPC request contexts end when the method returns. Application
+				// code (e.g. withParentTraceContext) may end OTEL spans that trigger
+				// BatchTraceSpanProcessor's fire-and-forget flush with scheduler.wait(1). Without
+				// waitUntil, that promise settles after the RPC context ends and workerd logs a
+				// cross-request promise warning.
+				ctx.waitUntil(exportSpans(tracker))
 			}
 		},
 	}
@@ -101,14 +109,14 @@ function instrumentEntrypoint(entrypoint: WorkerEntrypoint, initialiser: Initial
 			} else if (prop === 'fetch') {
 				const fetchFn = Reflect.get(target, prop)
 				if (fetchFn) {
-					return instrumentFetchFn(fetchFn, initialiser, env)
+					return instrumentFetchFn(fetchFn, initialiser, env, ctx)
 				}
 				return fetchFn
 			} else {
 				const result = Reflect.get(target, prop)
 				if (typeof result === 'function') {
 					result.bind(entrypoint)
-					return instrumentAnyFn(result, initialiser, env)
+					return instrumentAnyFn(result, initialiser, env, ctx)
 				}
 				return result
 			}

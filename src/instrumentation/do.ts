@@ -12,7 +12,7 @@ import { instrumentEnv } from './env.js'
 import { Initialiser, setConfig } from '../config.js'
 import { instrumentStorage } from './do-storage.js'
 import { DOConstructorTrigger } from '../types.js'
-import { flushMetrics } from '../sdk.js'
+import { exportSpans, proxyExecutionContext } from './common.js'
 
 import { DurableObject as DurableObjectClass } from 'cloudflare:workers'
 
@@ -82,8 +82,14 @@ export function instrumentState(state: DurableObjectState) {
 }
 
 let cold_start = true
-export function executeDOFetch(fetchFn: FetchFn, request: Request, id: DurableObjectId): Promise<Response> {
+export function executeDOFetch(
+	fetchFn: FetchFn,
+	request: Request,
+	id: DurableObjectId,
+	state: DurableObjectState,
+): Promise<Response> {
 	const spanContext = getParentContextFromHeaders(request.headers)
+	const { tracker } = proxyExecutionContext(state)
 
 	const tracer = trace.getTracer('DO fetchHandler')
 	const attributes = {
@@ -107,22 +113,27 @@ export function executeDOFetch(fetchFn: FetchFn, request: Request, id: DurableOb
 			}
 			span.setAttributes(gatherResponseAttributes(response))
 			span.end()
-			flushMetrics().catch(() => {})
+			state.waitUntil(exportSpans(tracker))
 
 			return response
 		} catch (error) {
 			span.recordException(error as Exception)
 			span.setStatus({ code: SpanStatusCode.ERROR })
 			span.end()
-			flushMetrics().catch(() => {})
+			state.waitUntil(exportSpans(tracker))
 			throw error
 		}
 	})
 	return promise
 }
 
-export function executeDOAlarm(alarmFn: NonNullable<AlarmFn>, id: DurableObjectId): Promise<void> {
+export function executeDOAlarm(
+	alarmFn: NonNullable<AlarmFn>,
+	id: DurableObjectId,
+	state: DurableObjectState,
+): Promise<void> {
 	const tracer = trace.getTracer('DO alarmHandler')
+	const { tracker } = proxyExecutionContext(state)
 
 	const name = id.name || ''
 	const promise = tracer.startActiveSpan(`Durable Object Alarm ${name}`, async (span) => {
@@ -134,19 +145,19 @@ export function executeDOAlarm(alarmFn: NonNullable<AlarmFn>, id: DurableObjectI
 		try {
 			await alarmFn()
 			span.end()
-			flushMetrics().catch(() => {})
+			state.waitUntil(exportSpans(tracker))
 		} catch (error) {
 			span.recordException(error as Exception)
 			span.setStatus({ code: SpanStatusCode.ERROR })
 			span.end()
-			flushMetrics().catch(() => {})
+			state.waitUntil(exportSpans(tracker))
 			throw error
 		}
 	})
 	return promise
 }
 
-function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env, id: DurableObjectId): FetchFn {
+function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env, state: DurableObjectState): FetchFn {
 	const fetchHandler: ProxyHandler<FetchFn> = {
 		async apply(target, thisArg, argArray: Parameters<FetchFn>) {
 			const request = argArray[0]
@@ -154,7 +165,7 @@ function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env,
 			const context = setConfig(config)
 			try {
 				const bound = target.bind(unwrap(thisArg))
-				return await api_context.with(context, executeDOFetch, undefined, bound, request, id)
+				return await api_context.with(context, executeDOFetch, undefined, bound, request, state.id, state)
 			} catch (error) {
 				throw error
 			}
@@ -163,7 +174,7 @@ function instrumentFetchFn(fetchFn: FetchFn, initialiser: Initialiser, env: Env,
 	return wrap(fetchFn, fetchHandler)
 }
 
-function instrumentAlarmFn(alarmFn: AlarmFn, initialiser: Initialiser, env: Env, id: DurableObjectId) {
+function instrumentAlarmFn(alarmFn: AlarmFn, initialiser: Initialiser, env: Env, state: DurableObjectState) {
 	if (!alarmFn) return undefined
 
 	const alarmHandler: ProxyHandler<NonNullable<AlarmFn>> = {
@@ -172,7 +183,7 @@ function instrumentAlarmFn(alarmFn: AlarmFn, initialiser: Initialiser, env: Env,
 			const context = setConfig(config)
 			try {
 				const bound = target.bind(unwrap(thisArg))
-				return await api_context.with(context, executeDOAlarm, undefined, bound, id)
+				return await api_context.with(context, executeDOAlarm, undefined, bound, state.id, state)
 			} catch (error) {
 				throw error
 			}
@@ -181,7 +192,7 @@ function instrumentAlarmFn(alarmFn: AlarmFn, initialiser: Initialiser, env: Env,
 	return wrap(alarmFn, alarmHandler)
 }
 
-function instrumentAnyFn(fn: () => any, initialiser: Initialiser, env: Env, _id: DurableObjectId) {
+function instrumentAnyFn(fn: () => any, initialiser: Initialiser, env: Env, state: DurableObjectState) {
 	if (!fn) return undefined
 
 	const fnHandler: ProxyHandler<() => any> = {
@@ -189,11 +200,14 @@ function instrumentAnyFn(fn: () => any, initialiser: Initialiser, env: Env, _id:
 			thisArg = unwrap(thisArg)
 			const config = initialiser(env, 'do-alarm')
 			const context = setConfig(config)
+			const { tracker } = proxyExecutionContext(state)
 			try {
 				const bound = target.bind(unwrap(thisArg))
 				return await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
-			} catch (error) {
-				throw error
+			} finally {
+				// Same cross-request flush hazard as WorkerEntrypoint RPC methods: keep the DO
+				// invocation context alive until BatchTraceSpanProcessor export settles.
+				state.waitUntil(exportSpans(tracker))
 			}
 		},
 	}
@@ -215,15 +229,15 @@ function instrumentDurableObject(
 				return env
 			} else if (prop === 'fetch') {
 				const fetchFn = Reflect.get(target, prop)
-				return instrumentFetchFn(fetchFn, initialiser, env, state.id)
+				return instrumentFetchFn(fetchFn, initialiser, env, state)
 			} else if (prop === 'alarm') {
 				const alarmFn = Reflect.get(target, prop)
-				return instrumentAlarmFn(alarmFn, initialiser, env, state.id)
+				return instrumentAlarmFn(alarmFn, initialiser, env, state)
 			} else {
 				const result = Reflect.get(target, prop)
 				if (typeof result === 'function') {
 					result.bind(doObj)
-					return instrumentAnyFn(result, initialiser, env, state.id)
+					return instrumentAnyFn(result, initialiser, env, state)
 				}
 				return result
 			}
