@@ -1,6 +1,6 @@
 {
 	"name": "@dxos/otel-cf-workers",
-	"version": "1.0.0-rc.63",
+	"version": "1.0.0-rc.64",
 	"module": "./dist/index.js",
 	"type": "module",
 	"types": "./dist/index.d.ts",
@@ -21,6 +21,7 @@
 		"prepare": "husky",
 		"test": "vitest run",
 		"test:dev": "vitest",
+		"test:e2e": "node e2e/websocket-do/run.mjs",
 		"ci": "run-s -l clean build check"
 	},
 	"files": [
@@ -48,7 +49,8 @@
 		"rimraf": "^6.0.1",
 		"tsup": "^8.4.0",
 		"typescript": "^5.8.3",
-		"vitest": "^2.1.9"
+		"vitest": "^2.1.9",
+		"wrangler": "^4.105.0"
 	},
 	"peerDependencies": {
 		"@opentelemetry/api": "~1.9.0"

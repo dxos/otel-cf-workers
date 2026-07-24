@@ -1,0 +1,11 @@
+{
+	"name": "e2e-websocket-do",
+	"main": "src/worker.mjs",
+	"compatibility_date": "2026-03-17",
+	"compatibility_flags": ["nodejs_compat"],
+	"durable_objects": {
+		"bindings": [{ "name": "ECHO", "class_name": "EchoDurableObject" }],
+	},
+	"services": [{ "binding": "AGENTS", "service": "e2e-websocket-do", "entrypoint": "AgentsEntrypoint" }],
+	"migrations": [{ "tag": "v1", "new_classes": ["EchoDurableObject"] }],
+}

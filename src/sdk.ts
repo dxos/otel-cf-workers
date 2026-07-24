@@ -16,7 +16,7 @@ import { DOClass, instrumentDOClass } from './instrumentation/do.js'
 import { scheduledInstrumentation } from './instrumentation/scheduled.js'
 import { instrumentEnv } from './instrumentation/env.js'
 import { versionAttributes } from './instrumentation/version.js'
-import { PromiseTracker, proxyExecutionContext } from './instrumentation/common.js'
+import { exportSpans, proxyExecutionContext } from './instrumentation/common.js'
 import { emailInstrumentation } from './instrumentation/email.js'
 import { EntrypointClass, instrumentEntrypointClass } from './instrumentation/entrypoint.js'
 import { RpcTargetClass, instrumentRpcTargetClass } from './instrumentation/rpc-target.js'
@@ -133,17 +133,7 @@ export async function flushMetrics(): Promise<void> {
 	}
 }
 
-export async function exportSpans(traceId: string, tracker?: PromiseTracker) {
-	const tracer = trace.getTracer('export')
-	if (tracer instanceof WorkerTracer) {
-		await scheduler.wait(1)
-		await tracker?.wait()
-		await tracer.forceFlush(traceId)
-	} else {
-		console.error('The global tracer is not of type WorkerTracer and can not export spans')
-	}
-	await flushMetrics()
-}
+export { exportSpans }
 
 type HandlerFnArgs<T extends Trigger, E extends Env> = (T | E | ExecutionContext)[]
 type OrderedHandlerFnArgs<T extends Trigger, E extends Env> = [trigger: T, env: E, ctx: ExecutionContext]

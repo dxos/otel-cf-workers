@@ -3,13 +3,8 @@ import { WorkerTracer } from '../tracer.js'
 import { flushMetrics } from '../sdk.js'
 import { passthroughGet, wrap } from '../wrap.js'
 
-/** Minimal context surface needed to keep async OTEL export alive across an invocation. */
-export type WaitUntilContext = {
-	waitUntil: (promise: Promise<unknown>) => void
-}
-
-type ContextAndTracker<T extends WaitUntilContext = ExecutionContext> = { ctx: T; tracker: PromiseTracker }
-type WaitUntilFn = WaitUntilContext['waitUntil']
+type ContextAndTracker = { ctx: ExecutionContext; tracker: PromiseTracker }
+type WaitUntilFn = ExecutionContext['waitUntil']
 
 export class PromiseTracker {
 	_outstandingPromises: Promise<unknown>[] = []
@@ -24,10 +19,13 @@ export class PromiseTracker {
 
 	async wait() {
 		await allSettledMutable(this._outstandingPromises)
+		// Release the settled promises: a tracker must never keep (potentially KJ-backed)
+		// promise objects alive beyond the invocation that created them.
+		this._outstandingPromises = []
 	}
 }
 
-function createWaitUntil(fn: WaitUntilFn, context: WaitUntilContext, tracker: PromiseTracker): WaitUntilFn {
+function createWaitUntil(fn: WaitUntilFn, context: ExecutionContext, tracker: PromiseTracker): WaitUntilFn {
 	const handler: ProxyHandler<WaitUntilFn> = {
 		apply(target, _thisArg, argArray) {
 			tracker.track(argArray[0])
@@ -37,7 +35,7 @@ function createWaitUntil(fn: WaitUntilFn, context: WaitUntilContext, tracker: Pr
 	return wrap(fn, handler)
 }
 
-export function proxyExecutionContext<T extends WaitUntilContext>(context: T): ContextAndTracker<T> {
+export function proxyExecutionContext(context: ExecutionContext): ContextAndTracker {
 	const tracker = new PromiseTracker()
 	const ctx = new Proxy(context, {
 		get(target, prop) {
@@ -52,16 +50,32 @@ export function proxyExecutionContext<T extends WaitUntilContext>(context: T): C
 	return { ctx, tracker }
 }
 
-export async function exportSpans(tracker?: PromiseTracker) {
-	const tracer = trace.getTracer('export')
-	if (tracer instanceof WorkerTracer) {
-		await scheduler.wait(1)
-		await tracker?.wait()
-		await tracer.forceFlush()
-	} else {
-		console.error('The global tracer is not of type WorkerTracer and can not export spans')
+/**
+ * Flush ended spans — of a single trace when `traceId` is given, otherwise of all traces —
+ * and metrics to the configured exporters. Never rejects.
+ *
+ * IMPORTANT: the returned promise must either be awaited inside the invocation that created it
+ * or be passed to a *real* `ExecutionContext#waitUntil`. `DurableObjectState#waitUntil` is a
+ * documented no-op, so scheduling the export there lets the `scheduler.wait` timer float past
+ * the invocation's I/O context: workerd logs "A promise was resolved or rejected from a
+ * different request context" at best, and under `wrangler dev` kills the whole isolate with
+ * "Fatal uncaught kj::Exception: … JavaScript heap objects must not contain KJ I/O objects" —
+ * severing every hibernatable WebSocket of the Durable Object with a 1006.
+ */
+export async function exportSpans(traceId?: string, tracker?: PromiseTracker): Promise<void> {
+	try {
+		const tracer = trace.getTracer('export')
+		if (tracer instanceof WorkerTracer) {
+			await scheduler.wait(1)
+			await tracker?.wait()
+			await tracer.forceFlush(traceId)
+		} else {
+			console.error('The global tracer is not of type WorkerTracer and can not export spans')
+		}
+		await flushMetrics()
+	} catch (error) {
+		console.error('OTEL span/metric export failed', error)
 	}
-	await flushMetrics()
 }
 
 /** Like `Promise.allSettled`, but handles modifications to the promises array */

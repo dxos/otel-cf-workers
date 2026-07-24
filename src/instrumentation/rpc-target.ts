@@ -1,6 +1,7 @@
 import { context as api_context } from '@opentelemetry/api'
 import { unwrap, wrap } from '../wrap.js'
 import { Initialiser, setConfig } from '../config.js'
+import { exportSpans } from './common.js'
 import { RpcTarget } from 'cloudflare:workers'
 
 type Env = Record<string, unknown>
@@ -15,8 +16,10 @@ function instrumentAnyFn(fn: (...args: any[]) => any, initialiser: Initialiser, 
 			try {
 				const bound = target.bind(thisArg)
 				return await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
-			} catch (error) {
-				throw error
+			} finally {
+				// An RpcTarget method has no ExecutionContext to extend, so await the export
+				// inside the invocation — same reasoning as the Durable Object wrappers.
+				await api_context.with(context, exportSpans)
 			}
 		},
 	}

@@ -9,7 +9,7 @@ import {
 } from './fetch.js'
 import { instrumentEnv } from './env.js'
 import { Initialiser, setConfig } from '../config.js'
-import { exportSpans, proxyExecutionContext } from './common.js'
+import { exportSpans } from './common.js'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 
 type Env = Record<string, unknown>
@@ -18,7 +18,6 @@ type FetchFn = NonNullable<WorkerEntrypoint['fetch']>
 let cold_start = true
 export function executeEntrypointFetch(fetchFn: FetchFn, request: Request, ctx: ExecutionContext): Promise<Response> {
 	const spanContext = getParentContextFromHeaders(request.headers)
-	const { tracker } = proxyExecutionContext(ctx)
 
 	const tracer = trace.getTracer('Entrypoint fetchHandler')
 	const attributes = {
@@ -41,17 +40,16 @@ export function executeEntrypointFetch(fetchFn: FetchFn, request: Request, ctx: 
 				span.setStatus({ code: SpanStatusCode.OK })
 			}
 			span.setAttributes(gatherResponseAttributes(response))
-			span.end()
-			// Keep the entrypoint fetch context alive across the async span/metric export.
-			ctx.waitUntil(exportSpans(tracker))
-
 			return response
 		} catch (error) {
 			span.recordException(error as Exception)
 			span.setStatus({ code: SpanStatusCode.ERROR })
-			span.end()
-			ctx.waitUntil(exportSpans(tracker))
 			throw error
+		} finally {
+			span.end()
+			// WorkerEntrypoint has a real ExecutionContext: hand the export to waitUntil so the
+			// invocation stays alive until it settles, without delaying the response.
+			ctx.waitUntil(exportSpans(span.spanContext().traceId))
 		}
 	})
 	return promise
@@ -81,18 +79,16 @@ function instrumentAnyFn(fn: (...args: any[]) => any, initialiser: Initialiser, 
 			thisArg = unwrap(thisArg)
 			const config = initialiser(env, 'entrypoint-method')
 			const context = setConfig(config)
-			const { tracker } = proxyExecutionContext(ctx)
 
 			try {
 				const bound = target.bind(thisArg)
 				return await api_context.with(context, () => bound.apply(thisArg, argArray), undefined)
 			} finally {
-				// WorkerEntrypoint RPC request contexts end when the method returns. Application
-				// code (e.g. withParentTraceContext) may end OTEL spans that trigger
-				// BatchTraceSpanProcessor's fire-and-forget flush with scheduler.wait(1). Without
-				// waitUntil, that promise settles after the RPC context ends and workerd logs a
-				// cross-request promise warning.
-				ctx.waitUntil(exportSpans(tracker))
+				// RPC invocation contexts end when the method returns; application code (e.g.
+				// withParentTraceContext) may have ended spans that now need exporting. Keep the
+				// flush alive via the entrypoint's real waitUntil, and run it inside the config
+				// context so the tail sampler sees it.
+				ctx.waitUntil(api_context.with(context, exportSpans))
 			}
 		},
 	}

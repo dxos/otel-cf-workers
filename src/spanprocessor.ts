@@ -14,10 +14,9 @@ function getSampler(): TailSampleFn {
 }
 
 class TraceState {
-	private unexportedSpans: ReadableSpan[] = []
+	private pendingSpans: ReadableSpan[] = []
 	private inprogressSpans = new Set<string>()
 	private exporter: SpanExporter
-	private exportPromises: Promise<void>[] = []
 	private localRootSpan?: ReadableSpan
 	private traceDecision?: boolean
 
@@ -25,46 +24,62 @@ class TraceState {
 		this.exporter = exporter
 	}
 
+	/** True when there is nothing left to export and no span is still running. */
+	get isSettled(): boolean {
+		return this.pendingSpans.length === 0 && this.inprogressSpans.size === 0
+	}
+
 	addSpan(span: Span): void {
 		const readableSpan = span as unknown as ReadableSpan
 		this.localRootSpan = this.localRootSpan || readableSpan
-		this.unexportedSpans.push(readableSpan)
+		this.pendingSpans.push(readableSpan)
 		this.inprogressSpans.add(span.spanContext().spanId)
 	}
 
 	endSpan(span: ReadableSpan): void {
+		// Note: no eager flush here. Flushing is driven exclusively by the instrumentation
+		// wrappers at the end of each invocation (awaited, or handed to a *real* waitUntil),
+		// so that no export promise ever floats past the I/O context that created it.
+		// A fire-and-forget flush from onEnd is what caused workerd's "promise was resolved
+		// or rejected from a different request context" warnings and — combined with promise
+		// retention in this long-lived object — fatal kj assertions under wrangler dev that
+		// killed the isolate and severed every hibernatable WebSocket with a 1006.
 		this.inprogressSpans.delete(span.spanContext().spanId)
-		if (this.inprogressSpans.size === 0) {
-			this.flush()
+	}
+
+	/**
+	 * Export the spans of this trace that have ended. Spans still in progress — e.g. owned by
+	 * another invocation running concurrently in this isolate — stay pending for a later flush
+	 * instead of being force-ended, which used to corrupt sibling traces.
+	 * Each call awaits only the export batch it started and never rejects.
+	 */
+	async flush(): Promise<void> {
+		const endedSpans = this.pendingSpans.filter((span) => !this.isSpanInProgress(span))
+		if (endedSpans.length === 0) {
+			return
+		}
+		this.pendingSpans = this.pendingSpans.filter((span) => this.isSpanInProgress(span))
+		const sampledSpans = this.sample(endedSpans)
+		if (sampledSpans.length === 0) {
+			return
+		}
+		try {
+			await this.exportSpans(sampledSpans)
+		} catch (error) {
+			console.log('exporting spans failed! ' + error)
 		}
 	}
 
-	sample() {
-		if (this.traceDecision === undefined && this.unexportedSpans.length > 0) {
+	private sample(spans: ReadableSpan[]): ReadableSpan[] {
+		if (this.traceDecision === undefined) {
 			const sampler = getSampler()
 			this.traceDecision = sampler({
 				traceId: this.localRootSpan!.spanContext().traceId,
 				localRootSpan: this.localRootSpan!,
-				spans: this.unexportedSpans,
+				spans,
 			})
 		}
-		this.unexportedSpans = this.traceDecision ? this.unexportedSpans : []
-	}
-
-	async flush(): Promise<void> {
-		if (this.unexportedSpans.length > 0) {
-			const unfinishedSpans = this.unexportedSpans.filter((span) => this.isSpanInProgress(span)) as unknown as Span[]
-			for (const span of unfinishedSpans) {
-				console.log(`Span ${span.spanContext().spanId} was not ended properly`)
-				span.end()
-			}
-			this.sample()
-			this.exportPromises.push(this.exportSpans(this.unexportedSpans))
-			this.unexportedSpans = []
-		}
-		if (this.exportPromises.length > 0) {
-			await Promise.allSettled(this.exportPromises)
-		}
+		return this.traceDecision ? spans : []
 	}
 
 	private isSpanInProgress(span: ReadableSpan) {
@@ -72,18 +87,15 @@ class TraceState {
 	}
 
 	private async exportSpans(spans: ReadableSpan[]): Promise<void> {
-		await scheduler.wait(1)
-		const promise = new Promise<void>((resolve, reject) => {
+		await new Promise<void>((resolve, reject) => {
 			this.exporter.export(spans, (result) => {
 				if (result.code === ExportResultCode.SUCCESS) {
 					resolve()
 				} else {
-					console.log('exporting spans failed! ' + result.error)
 					reject(result.error)
 				}
 			})
 		})
-		await promise
 	}
 }
 
@@ -111,9 +123,15 @@ export class BatchTraceSpanProcessor implements TraceFlushableSpanProcessor {
 
 	async forceFlush(traceId?: traceId): Promise<void> {
 		if (traceId) {
-			await this.getTraceState(traceId).flush()
+			const traceState = this.traces[traceId]
+			if (traceState) {
+				await traceState.flush()
+				if (traceState.isSettled) {
+					delete this.traces[traceId]
+				}
+			}
 		} else {
-			const promises = Object.values(this.traces).map((traceState: TraceState) => traceState.flush())
+			const promises = Object.keys(this.traces).map((id) => this.forceFlush(id))
 			await Promise.allSettled(promises)
 		}
 	}
