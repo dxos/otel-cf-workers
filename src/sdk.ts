@@ -61,7 +61,6 @@ function findVersionMeta(): WorkerVersionMetadata | undefined {
 }
 
 const createResource = (config: ResolvedTraceConfig, versionMeta?: WorkerVersionMetadata): Resource => {
-	console.log({ versionMeta })
 	const workerResourceAttrs = {
 		'cloud.provider': 'cloudflare',
 		'cloud.platform': 'cloudflare.workers',
